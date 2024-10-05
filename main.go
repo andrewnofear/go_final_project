@@ -10,11 +10,10 @@ import (
 	"strconv"
 )
 
-var Db *sql.DB
-
 func main() {
+	var Db *sql.DB
 	definePath()
-	if notExistFile(PathDbFile) == true { //ЗДЕСЬ, если файл не существует - вставка выполнится
+	if notExistFile(PathDbFile) == true {
 		err := createDbFile()
 		if err != nil {
 			log.Fatal(err)
@@ -22,35 +21,34 @@ func main() {
 		}
 	}
 	Db, err := sql.Open("sqlite", PathDbFile)
-	defer Db.Close()
 
 	if err != nil {
 		log.Fatal(err)
 		return
 	}
-
-	if rows, tableCheck := Db.Query("SELECT * FROM scheduler;"); tableCheck != nil { //проверка, если нет таблиц - создаем
+	row, tableCheck := Db.Query("SELECT * FROM scheduler;")
+	if tableCheck != nil {
 		err = CreateTable(Db)
 		if err != nil {
 			log.Fatal(err)
 			return
 		}
-		defer rows.Close()
+	} else {
+		row.Close()
 	}
 
-	//ДЛЯ ТЕСТА. Первый запуск - все ок, повторный, SQL busy
-	rows, err := Db.Query("INSERT INTO scheduler (date, title,comment,repeat) VALUES ('1', '2', '3', '4');")
-	defer rows.Close()
-	//ТЕСТ ЗАВЕРШЕН
-
+	Db.Close()
 	port, exists := os.LookupEnv("TODO_PORT")
 	if !exists {
 		port = ":" + strconv.Itoa(tests.Port)
 	}
-	fmt.Println(port)
+	fmt.Printf("Сервер запущен. Порт: %s", port)
+
 	http.Handle("/", http.FileServer(http.Dir("web")))
 	http.HandleFunc(`/api/nextdate`, apiNextDateHandler)
 	http.HandleFunc(`/api/task`, apiTaskHandler)
+	http.HandleFunc(`/api/tasks`, apiTasksHandler)
+	http.HandleFunc(`/api/task/done`, apiTaskDone)
 	if err := http.ListenAndServe(port, nil); err != nil {
 		fmt.Println("Start server error")
 	}

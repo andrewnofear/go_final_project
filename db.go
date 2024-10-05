@@ -16,7 +16,6 @@ var AppPath string
 
 func notExistFile(fileName string) bool {
 	_, err := os.Stat(PathDbFile)
-
 	if err != nil {
 		return true
 	}
