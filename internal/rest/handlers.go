@@ -1,4 +1,4 @@
-package main
+package rest
 
 import (
 	"bytes"
@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"go_final_project/internal/services"
 )
 
 type Task struct {
@@ -25,17 +27,6 @@ type RespJson struct {
 
 var task Task
 
-func retResponse(res http.ResponseWriter, rsp RespJson) {
-	dataJson, err := json.Marshal(rsp)
-	if err != nil {
-		http.Error(res, err.Error(), http.StatusBadRequest)
-		return
-	}
-	res.Header().Set("Content-Type", "application/json; charset=UTF-8")
-	res.WriteHeader(http.StatusOK)
-	res.Write(dataJson)
-}
-
 func checkTask(task Task) (RespJson, Task, error) {
 	var respJson RespJson
 	if task.Title == "" {
@@ -50,11 +41,15 @@ func checkTask(task Task) (RespJson, Task, error) {
 		respJson.Err = "Дата представлена в формате, отличном от 20060102"
 		return respJson, task, fmt.Errorf("Дата представлена в формате, отличном от 20060102")
 	}
-	if (valTime.Before(time.Now())) && (valTime.Day() != time.Now().Day()) {
+	if valTime.Day() == time.Now().Day() && valTime.Month() == time.Now().Month() && valTime.Year() == time.Now().Year() {
+		task.Date = time.Now().Format("20060102")
+		return respJson, task, nil
+	}
+	if valTime.Before(time.Now()) {
 		if task.Repeat == "" {
 			task.Date = time.Now().Format("20060102")
 		} else {
-			task.Date, err = NextDate(time.Now(), task.Date, task.Repeat)
+			task.Date, err = services.NextDate(time.Now(), task.Date, task.Repeat)
 			if err != nil {
 				respJson.Err = err.Error()
 				return respJson, task, fmt.Errorf("Ошибка в ходе вычисления следующей даты")
@@ -64,18 +59,22 @@ func checkTask(task Task) (RespJson, Task, error) {
 	return respJson, task, nil
 }
 
-func apiTaskHandler(res http.ResponseWriter, req *http.Request) {
-	db, err := sql.Open("sqlite", PathDbFile)
-	defer db.Close()
+func retResponse(res http.ResponseWriter, rsp RespJson) {
+	dataJson, err := json.Marshal(rsp)
 	if err != nil {
-		log.Fatal("apiTaskHandler: Ошибка при открытии соединения с базой данных. Error: %s")
+		http.Error(res, err.Error(), http.StatusBadRequest)
 		return
 	}
-	id := req.URL.Query().Get("id")
-	if req.Method == http.MethodPost {
+	res.Header().Set("Content-Type", "application/json; charset=UTF-8")
+	res.WriteHeader(http.StatusOK)
+	_, _ = res.Write(dataJson)
+}
+
+func ApiTaskHandlerPost(conn *sql.DB) func(res http.ResponseWriter, req *http.Request) {
+	return func(res http.ResponseWriter, req *http.Request) {
 		var respJson RespJson
 		var buf bytes.Buffer
-		_, err = buf.ReadFrom(req.Body)
+		_, err := buf.ReadFrom(req.Body)
 		if err != nil {
 			log.Printf("apiTaskHandler: Ошибка при чтении тела запроса. Error: %s", err)
 			respJson.Err = "Ошибка чтения тела запроса"
@@ -93,7 +92,7 @@ func apiTaskHandler(res http.ResponseWriter, req *http.Request) {
 			retResponse(res, respJson)
 			return
 		}
-		_, err = db.Exec("INSERT INTO scheduler (date, title,comment,repeat) VALUES (:date, :title, :comment, :repeat);",
+		_, err = conn.Exec("INSERT INTO scheduler (date, title,comment,repeat) VALUES (:date, :title, :comment, :repeat);",
 			sql.Named("date", task.Date),
 			sql.Named("title", task.Title),
 			sql.Named("comment", task.Comment),
@@ -105,7 +104,7 @@ func apiTaskHandler(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 		var retSelect string
-		row := db.QueryRow("SELECT id FROM scheduler ORDER BY id DESC LIMIT 1;")
+		row := conn.QueryRow("SELECT id FROM scheduler ORDER BY id DESC LIMIT 1;")
 		err = row.Scan(&retSelect)
 		if err != nil {
 			log.Printf("apiTaskHandler: Ошибка при получении ID. Error: %s", err)
@@ -117,9 +116,13 @@ func apiTaskHandler(res http.ResponseWriter, req *http.Request) {
 		retResponse(res, respJson)
 		return
 	}
-	if req.Method == http.MethodGet {
-		row := db.QueryRow(fmt.Sprintf("SELECT * FROM scheduler WHERE id = %s", id))
-		err = row.Scan(&task.Id, &task.Date, &task.Title, &task.Comment, &task.Repeat)
+}
+
+func ApiTaskHandlerGet(conn *sql.DB) func(res http.ResponseWriter, req *http.Request) {
+	return func(res http.ResponseWriter, req *http.Request) {
+		id := req.URL.Query().Get("id")
+		row := conn.QueryRow(fmt.Sprintf("SELECT * FROM scheduler WHERE id = %s", id))
+		err := row.Scan(&task.Id, &task.Date, &task.Title, &task.Comment, &task.Repeat)
 		if err != nil {
 			ret := RespJson{"", "Задача не найдена"}
 			dataJson, err := json.Marshal(ret)
@@ -129,7 +132,7 @@ func apiTaskHandler(res http.ResponseWriter, req *http.Request) {
 			}
 			res.Header().Set("Content-Type", "application/json; charset=UTF-8")
 			res.WriteHeader(http.StatusOK)
-			res.Write(dataJson)
+			_, _ = res.Write(dataJson)
 			return
 		}
 		dataJson, err := json.Marshal(task)
@@ -139,15 +142,19 @@ func apiTaskHandler(res http.ResponseWriter, req *http.Request) {
 		}
 		res.Header().Set("Content-Type", "application/json; charset=UTF-8")
 		res.WriteHeader(http.StatusOK)
-		res.Write(dataJson)
+		_, _ = res.Write(dataJson)
 	}
-	if req.Method == http.MethodDelete {
+}
+
+func ApiTaskHandlerDelete(conn *sql.DB) func(res http.ResponseWriter, req *http.Request) {
+	return func(res http.ResponseWriter, req *http.Request) {
+		id := req.URL.Query().Get("id")
 		if id == "" {
 			ret := RespJson{"", "ID пустой"}
 			retResponse(res, ret)
 			return
 		}
-		retRow, err := db.Exec("DELETE FROM scheduler WHERE id = :id", sql.Named("id", id))
+		retRow, err := conn.Exec("DELETE FROM scheduler WHERE id = :id", sql.Named("id", id))
 		if err != nil {
 			log.Printf("apiTaskHandler: Ошибка в ходе удаления. Error: %s", err)
 			ret := RespJson{"", "Ошибка в ходе удаления"}
@@ -170,10 +177,13 @@ func apiTaskHandler(res http.ResponseWriter, req *http.Request) {
 		retResponse(res, ret)
 		return
 	}
-	if req.Method == http.MethodPut {
+}
+
+func ApiTaskHandlerPut(conn *sql.DB) func(res http.ResponseWriter, req *http.Request) {
+	return func(res http.ResponseWriter, req *http.Request) {
 		var respJson RespJson
 		var buf bytes.Buffer
-		_, err = buf.ReadFrom(req.Body)
+		_, err := buf.ReadFrom(req.Body)
 		if err != nil {
 			log.Printf("apiTaskHandler: Ошибка при чтении тела запроса. Error: %s", err)
 			respJson.Err = "Ошибка чтения тела запроса"
@@ -191,7 +201,7 @@ func apiTaskHandler(res http.ResponseWriter, req *http.Request) {
 			retResponse(res, respJson)
 			return
 		}
-		retRow, err := db.Exec("UPDATE scheduler SET date = :date,title = :title,comment=:comment,repeat=:repeat WHERE id = :id",
+		retRow, err := conn.Exec("UPDATE scheduler SET date = :date,title = :title,comment=:comment,repeat=:repeat WHERE id = :id",
 			sql.Named("date", task.Date),
 			sql.Named("title", task.Title),
 			sql.Named("comment", task.Comment),
@@ -215,8 +225,9 @@ func apiTaskHandler(res http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func apiNextDateHandler(res http.ResponseWriter, req *http.Request) {
-	if req.Method == http.MethodGet {
+func ApiNextDateHandler(conn *sql.DB) func(res http.ResponseWriter, req *http.Request) {
+	return func(res http.ResponseWriter, req *http.Request) {
+
 		now := req.URL.Query().Get("now")
 		date := req.URL.Query().Get("date")
 		repeat := req.URL.Query().Get("repeat")
@@ -226,90 +237,81 @@ func apiNextDateHandler(res http.ResponseWriter, req *http.Request) {
 			res.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		valNextDate, err := NextDate(timeNow, date, repeat)
+		valNextDate, err := services.NextDate(timeNow, date, repeat)
 		if err != nil {
 			log.Printf("apiNextDateHandler: ошибка функции NextDate. Error: \"%s\"", err)
 			res.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		res.WriteHeader(http.StatusOK)
-		res.Write([]byte(valNextDate))
+		_, _ = res.Write([]byte(valNextDate))
 		return
+
 	}
-	res.WriteHeader(http.StatusBadRequest)
-	return
 }
 
-func apiTasksHandler(res http.ResponseWriter, req *http.Request) {
-	Db, err := sql.Open("sqlite", PathDbFile)
-	defer Db.Close()
-	if err != nil {
-		return
-	}
-
-	rows, err := Db.Query("SELECT * FROM scheduler ORDER BY date LIMIT 50;")
-	if err != nil {
-		log.Fatal("Ошибка выгрузки данных")
-		return
-	}
-	defer rows.Close()
-
-	var resp []byte
-
-	var tasks []Task
-	for rows.Next() {
-		task := Task{}
-
-		err := rows.Scan(&task.Id, &task.Date, &task.Title, &task.Comment, &task.Repeat)
+func ApiTasksHandler(conn *sql.DB) func(res http.ResponseWriter, req *http.Request) {
+	return func(res http.ResponseWriter, req *http.Request) {
+		rows, err := conn.Query("SELECT * FROM scheduler ORDER BY date LIMIT 50;")
 		if err != nil {
+			log.Fatal("Ошибка выгрузки данных")
+			return
+		}
+		defer rows.Close()
+
+		var resp []byte
+
+		var tasks []Task
+		for rows.Next() {
+			task := Task{}
+
+			err := rows.Scan(&task.Id, &task.Date, &task.Title, &task.Comment, &task.Repeat)
+			if err != nil {
+				log.Fatal("Ошибка при выгрузке данных rows.Next()")
+				return
+			}
+			tasks = append(tasks, task)
+		}
+		if err = rows.Err(); err != nil {
 			log.Fatal("Ошибка при выгрузке данных rows.Next()")
 			return
 		}
-		tasks = append(tasks, task)
-	}
-	if len(tasks) == 0 {
-		m := map[string][]string{"tasks": {}}
-		resp, err = json.Marshal(m)
-	} else {
-		m := make(map[string][]Task)
-		m["tasks"] = tasks
-		resp, err = json.Marshal(m)
-	}
+		if len(tasks) == 0 {
+			m := map[string][]string{"tasks": {}}
+			resp, err = json.Marshal(m)
+		} else {
+			m := make(map[string][]Task)
+			m["tasks"] = tasks
+			resp, err = json.Marshal(m)
+		}
 
-	if err != nil {
-		log.Fatal("Ошибка серилизации")
-		return
+		if err != nil {
+			log.Fatal("Ошибка серилизации")
+			return
+		}
+		res.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		res.WriteHeader(http.StatusOK)
+		_, _ = res.Write(resp)
 	}
-	res.Header().Set("Content-Type", "application/json; charset=UTF-8")
-	res.WriteHeader(http.StatusOK)
-	res.Write(resp)
 }
 
-func apiTaskDone(res http.ResponseWriter, req *http.Request) {
-	fmt.Println("ЗАШЛИ в apiTaskDone")
-	db, err := sql.Open("sqlite", PathDbFile)
-
-	defer db.Close()
-	if err != nil {
-		log.Fatal("apiTaskHandler: Ошибка при открытии соединения с базой данных. Error: %s")
-		return
-	}
-	if req.Method == http.MethodPost {
+func ApiTaskDone(conn *sql.DB) func(res http.ResponseWriter, req *http.Request) {
+	return func(res http.ResponseWriter, req *http.Request) {
 		id := req.URL.Query().Get("id")
 		if id == "" {
 			ret := RespJson{"", "ID пустой"}
 			retResponse(res, ret)
 			return
 		}
-		row := db.QueryRow(fmt.Sprintf("SELECT * FROM scheduler WHERE id = %s", id))
-		err = row.Scan(&task.Id, &task.Date, &task.Title, &task.Comment, &task.Repeat)
+		row := conn.QueryRow(fmt.Sprintf("SELECT * FROM scheduler WHERE id = %s", id))
+		err := row.Scan(&task.Id, &task.Date, &task.Title, &task.Comment, &task.Repeat)
 		if err != nil {
 			ret := RespJson{"", "Задача не найдена"}
 			retResponse(res, ret)
 			return
 		}
 		if task.Repeat == "" {
-			_, err = db.Exec("DELETE FROM scheduler WHERE id = :id", sql.Named("id", id))
+			_, err = conn.Exec("DELETE FROM scheduler WHERE id = :id", sql.Named("id", id))
 			if err != nil {
 				ret := RespJson{"", "Задача не найдена"}
 				retResponse(res, ret)
@@ -319,14 +321,14 @@ func apiTaskDone(res http.ResponseWriter, req *http.Request) {
 			retResponse(res, ret)
 			return
 		}
-		task.Date, err = NextDate(time.Now(), task.Date, task.Repeat)
+		task.Date, err = services.NextDate(time.Now(), task.Date, task.Repeat)
 		if err != nil {
 			log.Printf("apiTaskDone: ошибка функции NextDate. TASK: %s", task)
 			ret := RespJson{"", "Ошибка при вычислении следующей даты"}
 			retResponse(res, ret)
 			return
 		}
-		_, err = db.Exec("UPDATE scheduler SET date = :date WHERE id = :id",
+		_, err = conn.Exec("UPDATE scheduler SET date = :date WHERE id = :id",
 			sql.Named("date", task.Date),
 			sql.Named("id", id))
 		if err != nil {
@@ -337,6 +339,6 @@ func apiTaskDone(res http.ResponseWriter, req *http.Request) {
 		}
 		ret := RespJson{"", ""}
 		retResponse(res, ret)
-	}
 
+	}
 }

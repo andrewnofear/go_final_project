@@ -1,4 +1,4 @@
-package main
+package database
 
 import (
 	"database/sql"
@@ -14,7 +14,15 @@ import (
 var PathDbFile string
 var AppPath string
 
-func notExistFile(fileName string) bool {
+type Task struct {
+	Id      string `json:"id"`
+	Date    string `json:"date"`
+	Title   string `json:"title"`
+	Comment string `json:"comment"`
+	Repeat  string `json:"repeat"`
+}
+
+func NotExistFile(fileName string) bool {
 	_, err := os.Stat(PathDbFile)
 	if err != nil {
 		return true
@@ -22,7 +30,7 @@ func notExistFile(fileName string) bool {
 	return false
 }
 
-func definePath() error {
+func DefinePath() error {
 	AppPath, err := os.Getwd()
 	if err != nil {
 		log.Fatal(err)
@@ -32,7 +40,21 @@ func definePath() error {
 	return nil
 }
 
-func createDbFile() error {
+func CheckTable(conn *sql.DB) error {
+	row, tableCheck := conn.Query("SELECT * FROM scheduler LIMIT 1;")
+	if tableCheck != nil {
+		err := CreateTable(conn)
+		if err != nil {
+			log.Fatal(err)
+			return err
+		}
+	} else {
+		row.Close()
+	}
+	return nil
+}
+
+func CreateDbFile() error {
 	_, err := os.Create(PathDbFile)
 	if err != nil {
 		log.Fatal(err)
